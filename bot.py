@@ -5,6 +5,7 @@ from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from duckduckgo_search import DDGS
 import asyncio
+import urllib.parse
 
 load_dotenv()
 
@@ -14,7 +15,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MODEL = os.getenv("MODEL", "openai/gpt-oss-20b")
 
 canales_activos = set()
-canales_silenciados = set()   # Canales donde el bot está callado
+canales_silenciados = set()
 
 client = AsyncOpenAI(
     api_key=GROQ_API_KEY,
@@ -30,7 +31,6 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # ====================== FUNCIÓN DE BÚSQUEDA ======================
 def buscar_en_internet(pregunta: str) -> str:
-    """Busca información actual en internet"""
     try:
         with DDGS() as ddgs:
             resultados = list(ddgs.text(pregunta, max_results=5))
@@ -61,7 +61,6 @@ async def on_message(message):
     if message.content.startswith("!"):
         return
 
-    # Si el canal está silenciado, no responde
     if message.channel.id in canales_silenciados:
         return
 
@@ -73,7 +72,6 @@ async def on_message(message):
 
     try:
         async with message.channel.typing():
-            # Primero buscamos información actual si parece necesario
             busqueda = ""
             palabras_clave = ["quién es", "qué es", "cuándo", "dónde", "cómo", "noticia", "actual", "hoy", "último", "precio", "clima"]
             if any(p in message.content.lower() for p in palabras_clave):
@@ -108,6 +106,33 @@ async def on_message(message):
         await message.channel.send("❌ Hubo un error al generar la respuesta.")
 
 # ====================== COMANDOS ======================
+@bot.command(name="imagen")
+async def imagen(ctx, *, prompt: str = None):
+    """Genera una imagen gratis. Uso: !imagen un gato astronauta"""
+    if prompt is None:
+        await ctx.send("❌ Debes escribir una descripción.\nEjemplo: `!imagen un dragón volando sobre una ciudad`")
+        return
+
+    await ctx.send("🎨 Generando imagen, espera un momento...")
+
+    try:
+        # Codificar el prompt para la URL
+        prompt_encoded = urllib.parse.quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
+
+        embed = discord.Embed(
+            title="🖼️ Imagen generada",
+            description=f"**Prompt:** {prompt}",
+            color=discord.Color.purple()
+        )
+        embed.set_image(url=url)
+        embed.set_footer(text="Creado por Señor Fiesta (aloa.sd) • Powered by Pollinations")
+        
+        await ctx.send(embed=embed)
+
+    except Exception as e:
+        await ctx.send(f"❌ Error al generar la imagen: {str(e)[:100]}")
+
 @bot.command(name="entrar")
 @commands.has_permissions(manage_channels=True)
 async def entrar(ctx, *, nombre: str = None):
@@ -171,14 +196,12 @@ async def sacar(ctx, *, nombre: str = None):
 @bot.command(name="callate")
 @commands.has_permissions(administrator=True)
 async def callate(ctx):
-    """Solo administradores. Hace que el bot se calle en este canal."""
     canales_silenciados.add(ctx.channel.id)
-    await ctx.send("🔇 Me callo. Solo un administrador puede volver a activarme con `!habla`")
+    await ctx.send("🔇 Me callo. Solo un administrador puede activarme de nuevo con `!habla`")
 
 @bot.command(name="habla")
 @commands.has_permissions(administrator=True)
 async def habla(ctx):
-    """Solo administradores. Hace que el bot vuelva a hablar en este canal."""
     canales_silenciados.discard(ctx.channel.id)
     await ctx.send("🔊 Ya puedo hablar de nuevo en este canal.")
 
@@ -209,11 +232,11 @@ async def ayuda(ctx):
         description="Creado por **Señor Fiesta (aloa.sd)**",
         color=discord.Color.blurple()
     )
+    embed.add_field(name="!imagen [descripción]", value="🎨 Genera una imagen gratis\nEjemplo: `!imagen un gato con corona`", inline=False)
     embed.add_field(name="!entrar / !sacar", value="Activa o desactiva el bot en un canal", inline=False)
-    embed.add_field(name="!callate", value="🔇 Solo **Administradores**. Hace que me calle en este canal", inline=False)
+    embed.add_field(name="!callate", value="🔇 Solo **Administradores**. Me calla en este canal", inline=False)
     embed.add_field(name="!habla", value="🔊 Solo **Administradores**. Me deja hablar de nuevo", inline=False)
-    embed.add_field(name="!canales", value="Muestra los canales activos y si estoy silenciado", inline=False)
-    embed.add_field(name="Investigación", value="Puedo buscar información actual en internet cuando me preguntas cosas de actualidad", inline=False)
+    embed.add_field(name="!canales", value="Muestra los canales activos", inline=False)
     embed.set_footer(text="Creado con ❤️ por Señor Fiesta (aloa.sd)")
     await ctx.send(embed=embed)
 
