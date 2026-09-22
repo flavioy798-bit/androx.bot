@@ -20,7 +20,6 @@ CREATOR_ID = 1247581878148399155
 canales_activos = set()
 canales_silenciados = set()
 
-# Memoria por canal (últimos 10 mensajes)
 memoria = defaultdict(lambda: deque(maxlen=10))
 
 client = AsyncOpenAI(
@@ -41,13 +40,15 @@ def buscar_en_internet(pregunta: str) -> str:
         with DDGS() as ddgs:
             resultados = list(ddgs.text(pregunta, max_results=6))
             if not resultados:
-                return "No encontré información relevante."
-            texto = "Información actual de internet (2026):\n\n"
+                return "No encontré información reciente sobre eso."
+            
+            texto = "=== INFORMACIÓN ACTUAL DE INTERNET (2026) ===\n\n"
             for i, r in enumerate(resultados, 1):
-                texto += f"{i}. {r['title']}\n{r['body']}\nFuente: {r['href']}\n\n"
+                texto += f"{i}. {r.get('title', 'Sin título')}\n{r.get('body', '')}\nFuente: {r.get('href', '')}\n\n"
             return texto
     except Exception as e:
-        return f"Error buscando: {str(e)}"
+        print(f"Error en búsqueda: {e}")
+        return "No pude obtener información actual en este momento."
 
 def detectar_pedido_imagen(texto: str) -> str | None:
     texto = texto.lower()
@@ -89,7 +90,7 @@ async def on_message(message):
     if not (canal_activo or mencionado):
         return
 
-    # Detección de imagen en lenguaje natural
+    # Detección de imagen
     prompt_imagen = detectar_pedido_imagen(message.content)
     if prompt_imagen:
         await generar_imagen(message.channel, prompt_imagen)
@@ -98,7 +99,7 @@ async def on_message(message):
     es_creador = message.author.id == CREATOR_ID
     nombre_usuario = message.author.display_name
 
-    # Guardar mensaje del usuario en memoria
+    # Guardar en memoria
     memoria[message.channel.id].append({
         "role": "user",
         "content": f"{nombre_usuario}: {message.content}"
@@ -107,48 +108,51 @@ async def on_message(message):
     try:
         async with message.channel.typing():
 
-            # Búsqueda si es necesario
+            contenido_lower = message.content.lower()
+
+            # Forzar búsqueda si habla de años recientes o pide info actual
+            forzar_busqueda = any(p in contenido_lower for p in [
+                "2025", "2026", "2024", "este año", "el año pasado",
+                "qué pasó", "que paso", "noticias", "actual", "hoy",
+                "hace poco", "reciente", "últimamente", "ahora"
+            ])
+
             busqueda = ""
-            palabras_clave = ["quién", "qué es", "cuándo", "dónde", "cómo", "noticia", "actual", "hoy", "2026", "precio", "clima", "último"]
-            if any(p in message.content.lower() for p in palabras_clave):
+            if forzar_busqueda or any(p in contenido_lower for p in ["quién", "qué es", "cuándo", "dónde", "cómo", "precio", "clima"]):
                 busqueda = await asyncio.to_thread(buscar_en_internet, message.content)
 
-            # System prompt según si es el creador o no
+            # System prompt fuerte
             if es_creador:
                 system_prompt = (
-                    "Eres un asistente de Discord inteligente, amable y con humor. "
-                    "Hoy es septiembre de 2026.\n\n"
+                    "Eres un asistente de Discord inteligente, amable y con humor.\n\n"
+                    "FECHA ACTUAL: Septiembre de 2026.\n"
+                    "Nunca digas que tu conocimiento termina en 2023 o 2024. "
+                    "Estamos en 2026. Si no sabes algo reciente, usa la información de internet que te proporciono.\n\n"
                     "IMPORTANTE: Estás hablando DIRECTAMENTE con tu creador, Señor Fiesta (aloa.sd). "
-                    "Su ID es 1247581878148399155. Trátalo con respeto y cercanía. "
-                    "Si te dice que es tu creador, confírmalo con orgullo.\n\n"
-                    "REGLA DE ORO: Siempre presta mucha atención al historial de la conversación. "
-                    "Si el usuario responde con una sola palabra o frase corta, "
-                    "úsalo como continuación de lo que se estaba hablando justo antes. "
-                    "Nunca ignores el contexto reciente."
+                    "Su ID es 1247581878148399155. Trátalo con respeto y cercanía.\n\n"
+                    "REGLA DE ORO: Siempre usa el historial de la conversación. "
+                    "Si el usuario responde con una palabra corta, es continuación de lo anterior."
                 )
             else:
                 system_prompt = (
-                    "Eres un asistente de Discord inteligente, amable y con humor. "
-                    "Hoy es septiembre de 2026.\n\n"
+                    "Eres un asistente de Discord inteligente, amable y con humor.\n\n"
+                    "FECHA ACTUAL: Septiembre de 2026.\n"
+                    "Nunca digas que tu conocimiento termina en 2023 o 2024. "
+                    "Estamos en 2026. Si no sabes algo reciente, usa la información de internet que te proporciono.\n\n"
                     "Fuiste creado por Señor Fiesta (aloa.sd). "
                     "Si preguntan quién te creó, di con orgullo que fue Señor Fiesta (aloa.sd).\n\n"
-                    "REGLA DE ORO: Siempre presta mucha atención al historial de la conversación. "
-                    "Si el usuario responde con una sola palabra o frase corta, "
-                    "úsalo como continuación de lo que se estaba hablando justo antes. "
-                    "Nunca ignores el contexto reciente."
+                    "REGLA DE ORO: Siempre usa el historial de la conversación. "
+                    "Si el usuario responde con una palabra corta, es continuación de lo anterior."
                 )
 
             if busqueda:
-                system_prompt += f"\n\nInformación actual de internet:\n{busqueda}"
+                system_prompt += f"\n\n{busqueda}"
 
-            # Construir mensajes con historial
+            # Construir mensajes
             messages = [{"role": "system", "content": system_prompt}]
-
-            # Agregar los últimos mensajes de la memoria
             for msg in list(memoria[message.channel.id]):
                 messages.append(msg)
 
-            # Llamada a la IA
             respuesta = await client.chat.completions.create(
                 model=MODEL,
                 messages=messages,
@@ -157,7 +161,7 @@ async def on_message(message):
             )
             texto = respuesta.choices[0].message.content
 
-            # Guardar respuesta del bot en memoria
+            # Guardar respuesta
             memoria[message.channel.id].append({
                 "role": "assistant",
                 "content": texto
@@ -167,7 +171,7 @@ async def on_message(message):
 
     except Exception as e:
         print(f"Error IA: {e}")
-        await message.channel.send("❌ Hubo un error al generar la respuesta.")
+        await message.channel.send("❌ Hubo un error al generar la respuesta. Intenta de nuevo.")
 
 # ====================== GENERACIÓN DE IMÁGENES ======================
 async def generar_imagen(channel, prompt: str, cantidad: int = 1, estilo: str = None, tamaño: str = "cuadrada"):
@@ -340,8 +344,7 @@ async def ayuda(ctx):
             "🎨 Genera imágenes\n"
             "`--estilo anime/realista/cyberpunk/fantasia`\n"
             "`--tamaño cuadrada/horizontal/vertical/grande`\n"
-            "`--cantidad 1-4`\n"
-            "También entiende lenguaje natural."
+            "`--cantidad 1-4`"
         ),
         inline=False
     )
