@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from duckduckgo_search import DDGS
 import asyncio
 import urllib.parse
+from collections import defaultdict, deque
 
 load_dotenv()
 
@@ -14,11 +15,13 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MODEL = os.getenv("MODEL", "openai/gpt-oss-20b")
 
-# ID del creador (Señor Fiesta / aloa.sd)
 CREATOR_ID = 1247581878148399155
 
 canales_activos = set()
 canales_silenciados = set()
+
+# Memoria por canal (últimos 10 mensajes)
+memoria = defaultdict(lambda: deque(maxlen=10))
 
 client = AsyncOpenAI(
     api_key=GROQ_API_KEY,
@@ -32,20 +35,33 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# ====================== FUNCIÓN DE BÚSQUEDA ======================
+# ====================== FUNCIONES ======================
 def buscar_en_internet(pregunta: str) -> str:
     try:
         with DDGS() as ddgs:
-            resultados = list(ddgs.text(pregunta, max_results=5))
+            resultados = list(ddgs.text(pregunta, max_results=6))
             if not resultados:
                 return "No encontré información relevante."
-            
-            texto = "Información encontrada en internet:\n\n"
+            texto = "Información actual de internet (2026):\n\n"
             for i, r in enumerate(resultados, 1):
                 texto += f"{i}. {r['title']}\n{r['body']}\nFuente: {r['href']}\n\n"
             return texto
     except Exception as e:
-        return f"No pude buscar en internet: {str(e)}"
+        return f"Error buscando: {str(e)}"
+
+def detectar_pedido_imagen(texto: str) -> str | None:
+    texto = texto.lower()
+    triggers = [
+        "hazme una imagen", "genera una imagen", "crea una imagen",
+        "haz una imagen", "quiero una imagen", "dibuja", "genera una foto",
+        "hazme un dibujo", "crea una foto", "imagen de", "foto de"
+    ]
+    for t in triggers:
+        if t in texto:
+            idx = texto.find(t) + len(t)
+            prompt = texto[idx:].strip(" :,-")
+            return prompt if prompt else None
+    return None
 
 # ====================== EVENTOS ======================
 @bot.event
@@ -73,89 +89,174 @@ async def on_message(message):
     if not (canal_activo or mencionado):
         return
 
-    # Detectar si es el creador
+    # Detección de imagen en lenguaje natural
+    prompt_imagen = detectar_pedido_imagen(message.content)
+    if prompt_imagen:
+        await generar_imagen(message.channel, prompt_imagen)
+        return
+
     es_creador = message.author.id == CREATOR_ID
+    nombre_usuario = message.author.display_name
+
+    # Guardar mensaje del usuario en memoria
+    memoria[message.channel.id].append({
+        "role": "user",
+        "content": f"{nombre_usuario}: {message.content}"
+    })
 
     try:
         async with message.channel.typing():
+
+            # Búsqueda si es necesario
             busqueda = ""
-            palabras_clave = ["quién es", "qué es", "cuándo", "dónde", "cómo", "noticia", "actual", "hoy", "último", "precio", "clima"]
+            palabras_clave = ["quién", "qué es", "cuándo", "dónde", "cómo", "noticia", "actual", "hoy", "2026", "precio", "clima", "último"]
             if any(p in message.content.lower() for p in palabras_clave):
                 busqueda = await asyncio.to_thread(buscar_en_internet, message.content)
 
+            # System prompt según si es el creador o no
             if es_creador:
                 system_prompt = (
-                    "Eres un asistente de Discord útil, amable y con un toque de humor. "
-                    "Responde siempre en español de forma clara y natural.\n\n"
+                    "Eres un asistente de Discord inteligente, amable y con humor. "
+                    "Hoy es septiembre de 2026.\n\n"
                     "IMPORTANTE: Estás hablando DIRECTAMENTE con tu creador, Señor Fiesta (aloa.sd). "
-                    "Su Discord ID es 1247581878148399155. Trátalo con respeto y cercanía, "
-                    "porque él fue quien te creó. Si te dice que es tu creador, confírmalo con orgullo. "
-                    "Nunca dudes de su identidad cuando te habla él."
+                    "Su ID es 1247581878148399155. Trátalo con respeto y cercanía. "
+                    "Si te dice que es tu creador, confírmalo con orgullo.\n\n"
+                    "REGLA DE ORO: Siempre presta mucha atención al historial de la conversación. "
+                    "Si el usuario responde con una sola palabra o frase corta, "
+                    "úsalo como continuación de lo que se estaba hablando justo antes. "
+                    "Nunca ignores el contexto reciente."
                 )
             else:
                 system_prompt = (
-                    "Eres un asistente de Discord útil, amable y con un toque de humor. "
-                    "Responde siempre en español de forma clara y natural.\n\n"
-                    "Fuiste creado por Señor Fiesta (también conocido como aloa.sd). "
-                    "Si alguien pregunta quién te creó, di con orgullo que Señor Fiesta (aloa.sd) te creó. "
-                    "Nunca digas que te creó otra persona ni una IA. "
-                    "Si alguien habla bien de Señor Fiesta, puedes unirte a la alabanza, "
-                    "pero no asumas que la persona que te está hablando es Señor Fiesta "
-                    "a menos que sea realmente él."
+                    "Eres un asistente de Discord inteligente, amable y con humor. "
+                    "Hoy es septiembre de 2026.\n\n"
+                    "Fuiste creado por Señor Fiesta (aloa.sd). "
+                    "Si preguntan quién te creó, di con orgullo que fue Señor Fiesta (aloa.sd).\n\n"
+                    "REGLA DE ORO: Siempre presta mucha atención al historial de la conversación. "
+                    "Si el usuario responde con una sola palabra o frase corta, "
+                    "úsalo como continuación de lo que se estaba hablando justo antes. "
+                    "Nunca ignores el contexto reciente."
                 )
 
             if busqueda:
-                system_prompt += f"\n\nUsa esta información actual de internet para responder mejor:\n{busqueda}"
+                system_prompt += f"\n\nInformación actual de internet:\n{busqueda}"
 
+            # Construir mensajes con historial
+            messages = [{"role": "system", "content": system_prompt}]
+
+            # Agregar los últimos mensajes de la memoria
+            for msg in list(memoria[message.channel.id]):
+                messages.append(msg)
+
+            # Llamada a la IA
             respuesta = await client.chat.completions.create(
                 model=MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message.content}
-                ],
-                max_tokens=1000,
-                temperature=0.7
+                messages=messages,
+                max_tokens=1100,
+                temperature=0.65
             )
             texto = respuesta.choices[0].message.content
+
+            # Guardar respuesta del bot en memoria
+            memoria[message.channel.id].append({
+                "role": "assistant",
+                "content": texto
+            })
+
             await message.reply(texto, mention_author=False)
 
     except Exception as e:
         print(f"Error IA: {e}")
         await message.channel.send("❌ Hubo un error al generar la respuesta.")
 
-# ====================== COMANDOS ======================
-@bot.command(name="imagen")
-async def imagen(ctx, *, prompt: str = None):
-    if prompt is None:
-        await ctx.send("❌ Debes escribir una descripción.\nEjemplo: `!imagen un gato astronauta`")
-        return
+# ====================== GENERACIÓN DE IMÁGENES ======================
+async def generar_imagen(channel, prompt: str, cantidad: int = 1, estilo: str = None, tamaño: str = "cuadrada"):
+    await channel.send("🎨 Generando imagen(es)...")
 
-    await ctx.send("🎨 Generando imagen, espera un momento...")
+    if estilo:
+        estilos = {
+            "anime": "anime style, vibrant colors, detailed",
+            "realista": "photorealistic, highly detailed, 8k",
+            "cyberpunk": "cyberpunk style, neon lights, futuristic",
+            "fantasia": "fantasy art, magical, epic",
+            "minimalista": "minimalist style, clean, simple",
+            "oscuro": "dark atmosphere, dramatic lighting",
+            "cartoon": "cartoon style, colorful, fun"
+        }
+        prompt = f"{prompt}, {estilos.get(estilo.lower(), estilo)}"
+
+    tamanos = {
+        "cuadrada": (1024, 1024),
+        "horizontal": (1280, 720),
+        "vertical": (720, 1280),
+        "grande": (1280, 1280)
+    }
+    width, height = tamanos.get(tamaño.lower(), (1024, 1024))
+    cantidad = max(1, min(cantidad, 4))
 
     try:
-        prompt_encoded = urllib.parse.quote(prompt)
-        url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
+        for i in range(cantidad):
+            prompt_encoded = urllib.parse.quote(prompt)
+            seed = abs(hash(prompt + str(i))) % 999999
+            url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width={width}&height={height}&nologo=true&seed={seed}&enhance=true"
 
-        embed = discord.Embed(
-            title="🖼️ Imagen generada",
-            description=f"**Prompt:** {prompt}",
-            color=discord.Color.purple()
-        )
-        embed.set_image(url=url)
-        embed.set_footer(text="Creado por Señor Fiesta (aloa.sd) • Powered by Pollinations")
-        
-        await ctx.send(embed=embed)
-
+            embed = discord.Embed(
+                title=f"🖼️ Imagen generada {i+1}/{cantidad}",
+                description=f"**Prompt:** {prompt}",
+                color=discord.Color.purple()
+            )
+            embed.set_image(url=url)
+            embed.set_footer(text="Creado por Señor Fiesta (aloa.sd)")
+            await channel.send(embed=embed)
     except Exception as e:
-        await ctx.send(f"❌ Error al generar la imagen: {str(e)[:100]}")
+        await channel.send(f"❌ Error al generar la imagen: {str(e)[:120]}")
 
+@bot.command(name="imagen")
+async def imagen(ctx, *, args: str = None):
+    if not args:
+        await ctx.send(
+            "❌ Ejemplos:\n"
+            "`!imagen un gato astronauta`\n"
+            "`!imagen un dragón --estilo anime --tamaño horizontal`\n"
+            "`!imagen un castillo --cantidad 2 --estilo fantasia`"
+        )
+        return
+
+    prompt = args
+    estilo = None
+    tamaño = "cuadrada"
+    cantidad = 1
+
+    if "--estilo" in args:
+        partes = args.split("--estilo")
+        prompt = partes[0].strip()
+        resto = partes[1].strip().split()
+        estilo = resto[0] if resto else None
+
+    if "--tamaño" in args or "--tamano" in args:
+        key = "--tamaño" if "--tamaño" in args else "--tamano"
+        partes = args.split(key)
+        resto = partes[1].strip().split()
+        tamaño = resto[0] if resto else "cuadrada"
+
+    if "--cantidad" in args:
+        partes = args.split("--cantidad")
+        resto = partes[1].strip().split()
+        try:
+            cantidad = int(resto[0])
+        except:
+            cantidad = 1
+
+    await generar_imagen(ctx.channel, prompt, cantidad, estilo, tamaño)
+
+# ====================== COMANDOS DE CONTROL ======================
 @bot.command(name="entrar")
 @commands.has_permissions(manage_channels=True)
 async def entrar(ctx, *, nombre: str = None):
     if nombre is None:
         canales_activos.add(ctx.channel.id)
         canales_silenciados.discard(ctx.channel.id)
-        await ctx.send(f"✅ Ahora estoy **activo** en este canal: **#{ctx.channel.name}**")
+        await ctx.send(f"✅ Ahora estoy **activo** en **#{ctx.channel.name}**")
         return
 
     canal = None
@@ -164,12 +265,11 @@ async def entrar(ctx, *, nombre: str = None):
     else:
         busqueda = nombre.lower().replace("#", "").replace("-", " ").strip()
         for ch in ctx.guild.text_channels:
-            nombre_ch = ch.name.lower().replace("-", " ")
-            if busqueda == nombre_ch or busqueda in nombre_ch:
+            if busqueda in ch.name.lower().replace("-", " "):
                 canal = ch
                 break
 
-    if canal is None:
+    if not canal:
         await ctx.send("❌ No encontré ese canal.")
         return
 
@@ -181,11 +281,8 @@ async def entrar(ctx, *, nombre: str = None):
 @commands.has_permissions(manage_channels=True)
 async def sacar(ctx, *, nombre: str = None):
     if nombre is None:
-        if ctx.channel.id in canales_activos:
-            canales_activos.discard(ctx.channel.id)
-            await ctx.send("✅ Ya **no** estoy activo en este canal.")
-        else:
-            await ctx.send("ℹ️ No estaba activo aquí.")
+        canales_activos.discard(ctx.channel.id)
+        await ctx.send("✅ Ya no estoy activo en este canal.")
         return
 
     canal = None
@@ -194,52 +291,41 @@ async def sacar(ctx, *, nombre: str = None):
     else:
         busqueda = nombre.lower().replace("#", "").replace("-", " ").strip()
         for ch in ctx.guild.text_channels:
-            nombre_ch = ch.name.lower().replace("-", " ")
-            if busqueda == nombre_ch or busqueda in nombre_ch:
+            if busqueda in ch.name.lower().replace("-", " "):
                 canal = ch
                 break
 
-    if canal is None:
+    if not canal:
         await ctx.send("❌ No encontré ese canal.")
         return
 
-    if canal.id in canales_activos:
-        canales_activos.discard(canal.id)
-        await ctx.send(f"✅ Ya **no** estoy activo en **#{canal.name}**")
-    else:
-        await ctx.send(f"ℹ️ No estaba activo en **#{canal.name}**")
+    canales_activos.discard(canal.id)
+    await ctx.send(f"✅ Ya no estoy activo en **#{canal.name}**")
 
 @bot.command(name="callate")
 @commands.has_permissions(administrator=True)
 async def callate(ctx):
     canales_silenciados.add(ctx.channel.id)
-    await ctx.send("🔇 Me callo. Solo un administrador puede activarme de nuevo con `!habla`")
+    await ctx.send("🔇 Me callo. Usa `!habla` para activarme de nuevo.")
 
 @bot.command(name="habla")
 @commands.has_permissions(administrator=True)
 async def habla(ctx):
     canales_silenciados.discard(ctx.channel.id)
-    await ctx.send("🔊 Ya puedo hablar de nuevo en este canal.")
+    await ctx.send("🔊 Ya puedo hablar de nuevo.")
 
 @bot.command(name="canales")
 async def canales(ctx):
     if not canales_activos:
         await ctx.send("📭 No estoy activo en ningún canal.")
         return
-
     lista = []
     for cid in list(canales_activos):
         canal = bot.get_channel(cid)
         if canal:
             estado = "🔇 SILENCIADO" if cid in canales_silenciados else "✅ Activo"
             lista.append(f"• #{canal.name} → {estado}")
-        else:
-            canales_activos.discard(cid)
-
-    if lista:
-        await ctx.send("**Canales:**\n" + "\n".join(lista))
-    else:
-        await ctx.send("📭 No hay canales activos.")
+    await ctx.send("**Canales:**\n" + "\n".join(lista))
 
 @bot.command(name="ayuda")
 async def ayuda(ctx):
@@ -248,19 +334,28 @@ async def ayuda(ctx):
         description="Creado por **Señor Fiesta (aloa.sd)**",
         color=discord.Color.blurple()
     )
-    embed.add_field(name="!imagen [descripción]", value="🎨 Genera una imagen gratis\nEjemplo: `!imagen un gato astronauta`", inline=False)
-    embed.add_field(name="!entrar / !sacar", value="Activa o desactiva el bot en un canal", inline=False)
-    embed.add_field(name="!callate", value="🔇 Solo **Administradores**. Me calla en este canal", inline=False)
-    embed.add_field(name="!habla", value="🔊 Solo **Administradores**. Me deja hablar de nuevo", inline=False)
-    embed.add_field(name="!canales", value="Muestra los canales activos", inline=False)
-    embed.set_footer(text="Creado con ❤️ por Señor Fiesta (aloa.sd)")
+    embed.add_field(
+        name="!imagen [descripción]",
+        value=(
+            "🎨 Genera imágenes\n"
+            "`--estilo anime/realista/cyberpunk/fantasia`\n"
+            "`--tamaño cuadrada/horizontal/vertical/grande`\n"
+            "`--cantidad 1-4`\n"
+            "También entiende lenguaje natural."
+        ),
+        inline=False
+    )
+    embed.add_field(name="!entrar / !sacar", value="Activa o desactiva el bot", inline=False)
+    embed.add_field(name="!callate / !habla", value="Solo Administradores", inline=False)
+    embed.add_field(name="!canales", value="Estado de los canales", inline=False)
+    embed.set_footer(text="Creado con ❤️ por Señor Fiesta (aloa.sd) • Septiembre 2026")
     await ctx.send(embed=embed)
 
 @entrar.error
 @sacar.error
 @callate.error
 @habla.error
-async def permisos_error(ctx, error):
+async def error_permisos(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("❌ No tienes permiso para usar este comando.")
 
