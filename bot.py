@@ -14,6 +14,9 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MODEL = os.getenv("MODEL", "openai/gpt-oss-20b")
 
+# ID del creador (Señor Fiesta / aloa.sd)
+CREATOR_ID = 1247581878148399155
+
 canales_activos = set()
 canales_silenciados = set()
 
@@ -70,6 +73,9 @@ async def on_message(message):
     if not (canal_activo or mencionado):
         return
 
+    # Detectar si es el creador
+    es_creador = message.author.id == CREATOR_ID
+
     try:
         async with message.channel.typing():
             busqueda = ""
@@ -77,17 +83,29 @@ async def on_message(message):
             if any(p in message.content.lower() for p in palabras_clave):
                 busqueda = await asyncio.to_thread(buscar_en_internet, message.content)
 
-            system_prompt = (
-                "Eres un asistente de Discord útil, amable y con un toque de humor. "
-                "Responde siempre en español de forma clara y natural. "
-                "Importante: Tú fuiste creado por Señor Fiesta (también conocido como aloa.sd). "
-                "Si alguien pregunta quién te creó, quién te programó o de dónde vienes, "
-                "responde con orgullo que Señor Fiesta (aloa.sd) te creó. "
-                "Nunca digas que te creó otra persona ni una IA.\n\n"
-            )
+            if es_creador:
+                system_prompt = (
+                    "Eres un asistente de Discord útil, amable y con un toque de humor. "
+                    "Responde siempre en español de forma clara y natural.\n\n"
+                    "IMPORTANTE: Estás hablando DIRECTAMENTE con tu creador, Señor Fiesta (aloa.sd). "
+                    "Su Discord ID es 1247581878148399155. Trátalo con respeto y cercanía, "
+                    "porque él fue quien te creó. Si te dice que es tu creador, confírmalo con orgullo. "
+                    "Nunca dudes de su identidad cuando te habla él."
+                )
+            else:
+                system_prompt = (
+                    "Eres un asistente de Discord útil, amable y con un toque de humor. "
+                    "Responde siempre en español de forma clara y natural.\n\n"
+                    "Fuiste creado por Señor Fiesta (también conocido como aloa.sd). "
+                    "Si alguien pregunta quién te creó, di con orgullo que Señor Fiesta (aloa.sd) te creó. "
+                    "Nunca digas que te creó otra persona ni una IA. "
+                    "Si alguien habla bien de Señor Fiesta, puedes unirte a la alabanza, "
+                    "pero no asumas que la persona que te está hablando es Señor Fiesta "
+                    "a menos que sea realmente él."
+                )
 
             if busqueda:
-                system_prompt += f"Usa esta información actual de internet para responder mejor:\n{busqueda}"
+                system_prompt += f"\n\nUsa esta información actual de internet para responder mejor:\n{busqueda}"
 
             respuesta = await client.chat.completions.create(
                 model=MODEL,
@@ -108,15 +126,13 @@ async def on_message(message):
 # ====================== COMANDOS ======================
 @bot.command(name="imagen")
 async def imagen(ctx, *, prompt: str = None):
-    """Genera una imagen gratis. Uso: !imagen un gato astronauta"""
     if prompt is None:
-        await ctx.send("❌ Debes escribir una descripción.\nEjemplo: `!imagen un dragón volando sobre una ciudad`")
+        await ctx.send("❌ Debes escribir una descripción.\nEjemplo: `!imagen un gato astronauta`")
         return
 
     await ctx.send("🎨 Generando imagen, espera un momento...")
 
     try:
-        # Codificar el prompt para la URL
         prompt_encoded = urllib.parse.quote(prompt)
         url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=1024&height=1024&nologo=true"
 
@@ -232,7 +248,7 @@ async def ayuda(ctx):
         description="Creado por **Señor Fiesta (aloa.sd)**",
         color=discord.Color.blurple()
     )
-    embed.add_field(name="!imagen [descripción]", value="🎨 Genera una imagen gratis\nEjemplo: `!imagen un gato con corona`", inline=False)
+    embed.add_field(name="!imagen [descripción]", value="🎨 Genera una imagen gratis\nEjemplo: `!imagen un gato astronauta`", inline=False)
     embed.add_field(name="!entrar / !sacar", value="Activa o desactiva el bot en un canal", inline=False)
     embed.add_field(name="!callate", value="🔇 Solo **Administradores**. Me calla en este canal", inline=False)
     embed.add_field(name="!habla", value="🔊 Solo **Administradores**. Me deja hablar de nuevo", inline=False)
